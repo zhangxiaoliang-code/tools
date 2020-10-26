@@ -1,0 +1,148 @@
+https://blog.csdn.net/justloveyou_/article/details/72231425
+
+摘要：
+	1.SPI机制是什么，有那些应用场景，又带来了哪些问题？
+	2.双亲委派模型是java推荐的类加载模型，但违背改模型的案例有哪些？为什么会违背，又是怎么解决这种case的？
+	3.JDBC驱动加载的案例有哪些，SPI机制为它带来那些方便？
+	4.线程上下文类加载器的作用与应用场景？
+	
+一、引子
+	SPI机制简介
+		SPI的全名为Service Provider Interface，主要是应用于厂商自定义组件和插件中，在java.util.ServiceLoader的
+	文档里有比较详细的介绍。简单的总结下java SPI机制的思想：我们系统里抽象的各个模块，往往有很多不同的实现方案，比如：日志模块
+	、XML解析模块、JDBC模块等方案。面向的对象设计里，我们一般推荐模块之间接口编程，模块之间不对实现类硬编码。一旦代码里涉及具体
+	的实现类，就违反了可插拔原则，如果需要替换一种实现，就需要修改代码。为了实现在模块装配的时候能不在程序里动态指明，这就需要一种
+	服务的发现机制。java SPI就是提供这样的一种机制：为某个接口寻找服务实现的机制。有点类似于IOC的思想，就是将装配的控制权移到
+	程序之外，在模块化设计中这个机制尤其重要。
+	
+		Java SPI的具体约定为：当服务的提供者提供了服务接口的一种实现之后，在jar包的META-INF/services/目录里同时创建一个
+	以服务接口命名的文件，该文件里就是实现该服务接口的具体实现类。而当外部程序装配这个模块的时候，就能通过该jar包META-INF/services/
+	里的配置文件找到具体的实现类名，并装载实例化，完成模块的注入。基于这样一个约定就能很好的找到服务接口的实现类，而不需要在代码里
+	制定。JDK提供服务实现查找的一个工具类：java.util.ServiceLoader。JDBC SPI mysql的实现如下所示。查看链接里面图片
+	
+	SPI机制带来的问题
+		java提供了很多服务SPI，允许第三方为这些接口提供实现。这些SPI的接口由Java核心库来提供，而这些SPI的实现则由各供应商来
+	完成。终端只需要将所需的实现作为Java应用所依赖的jar包包含进类路径（CLASSPATH）就可以了。问题在于SPI接口中的代码经常需要
+	加载具体的实现类：SPI的接口是Java核心库的一部分，是由启动类加载器来加载的；而SPI的实现类是由系统类加载器来加载的。启动类加
+	载器是无法找到SPI的实现类的（因为它只加载Java的核心库），按照双亲委派模型，启动类加载器无法委派系统类加载器去加载类。也就是
+	说，类加载器的双亲委派模式无法解决这个问题的。
+		线程上下文类加载器正好解决了这个问题。线程上下文类加载器破坏了“双亲委托模型”，可以在执行线程中抛弃双亲委派加载链模式，
+	使程序可以逆向使用类加载器。
+	
+二、线程上下文类加载器
+		线程上下文类加载器（context class loader）是从JDK1.2开始引入的。Java.lang.Thread中的方法
+	getContextClassLoader和setContextClassLoader(Classloader cl)用来获取和设置线程的上下文类加载器，如果没有通过
+	setContextClassLoader(ClassLoader cl)方法进行设置的话，线程将继承其父线程的上下文类加载器。Java应用运行的初始线程
+	的上下文类加载器是系统类加载器，在线程中运行的代码可以通过此类加载器来加载类和资源。
+		
+		线程上下文类加载器从根本解决了一般应用不能违背双亲委派模式的问题，使得java类加载体系显得更灵活。上面所提到的问题正是线程
+	上下文类加载器的拿手好菜。如果不做任何设置，Java应用的上下文类加载器默认就是系统类加载器。因此，在SPI接口的代码中使用线程上
+	下文类加载器，就可以成功的加载到SPI实现的类。
+	
+三、违背双亲委派案例之JDBC
+	1、JDBC驱动注册的常用几种方式
+		java数据库连接（Java Database Connectivity，简称JDBC）是Java语言用来规范客户端程序如何访问数据库的应用程序接口。
+	提供了注入查询和更新数据库的方法，JDBC的驱动包就是上述接口的实现，由数据库厂商开发，是Java和各数据库之间的连接桥梁。每一种
+	数据库对应一块驱动jar，甚至每个版本的数据库都有自己对应版本的驱动。我们知道，JDBC规范中明确要求Driver（数据库驱动）类必须
+	向DriverManager注册自己，所以在与数据库交互前必须完成驱动注册，那么先来看看平时我们是如何注册JDBC驱动的。
+		方式一：Class.forName("com.mysql.jdbc.Driver")
+		使用该方式注册的关键在于Class.forName(driver);,这句话的作用是加载并初始化指定驱动。mysql jdbc正是在Driver
+	初始化的时候完成注册：
+		
+		方式二：System.setProperty("jdbc.Drivers","com.mysql.jdbc.Driver")
+		这种方式是通过系统的属性设置注册驱动，最终还是通过系统类加载器完成。
+		
+		方式三：SPI服务加载机制注册驱动
+		try{
+			//Class.forName(driver);
+			conn = (Connection)DriverManager.getConnection(url, user, passwd);
+		}catch(Exception e){
+			System.out.println(e);
+		}
+		各位可以发现，这种方式与第一种方式唯一的区别就是经常写的Class.forName被注释掉了，但程序依然可以正常运行，这是为什么呢？
+	这是因为，从JDK1.6开始，Oracle就修改了加载JDBC驱动的方式，即JDBC4.0。在JDBC4.0中我们不必再显示使用Class.forName()
+	方法明确加载JDBC驱动。当调用getConnection方法时，DriverManager会尝试自动设置合适的驱动程序。提前是，只要mysql的jar包
+	在路径中。
+		那到底是哪一步自动注册了mysql driver的呢？我们接下来进一步分析。
+		
+	2、SPI服务加载机制注册驱动原理分析
+		重点就在DriverManager.getConnection()中。我们知道，调用类的静态方法会初始化该类，而执行其静态代码块是初始化类过程
+	中必不可少的一环。DriverManager的静态代码块：
+		static{
+			loadInitialDriver();
+			println("JDBC DriverManager initialized");
+		}
+		初始化方法loadInitialDriver()的代码我们其实已经见过了，第二种和第三种的驱动注册逻辑都在这里面：
+		
+		此处省略代码...
+		
+	从上面可以看出，JDBC中的DriverManager加载Driver的步骤顺序依次是：
+		1、通过SPI方式，读取META-INF/services 下文件中的类名，使用线程上下文类加载器加载；
+		2、通过System.getProperty("jdbc.driver")获取设置，然后通过系统类加载器加载。
+	我们现在只讨论SPI方式的实现，来看刚才的代码：
+		此处省略代码。。。
+		
+		注意：driverIterator.next()这条语句完成驱动的注册工作，如下所示：
+		此处省略代码。。。
+		
+		好，那句因SPI而省略的代码现在解释清楚了，那我们继续看给这个方法传的loader是怎么来的。因为Class.forName(DriverName,false,loader)
+	代码所在的类在java.util.SerivceLoader类中,而ServiceLoader.class又加载在BootstrapLoader中，因此传给forName
+	的loader必然不能是BootstrapLoader(启动类加载器只能加载Java核心类库)。这个时候只能使用线程上下文加载器了：把自己加载不
+	了的类加载到线程上下文类加载器中（通过Thread.currentThread()获取），而线程上下文类加载器默认是使用系统类加载器AppClassLoader
+	
+	回头看看ServiceLoader.load(Class)的代码，的确如此：
+	
+	ContextClassLoader默认存放了APPClassLoader的引用,由于它是在运行时被放在了线程中，所以不管当前程序处于何处（BootstrapClassLoader
+	或是ExtClassLoader等），在任何需要的时候都可以用Thread.currentThread().getContextClassLoader()取出应用程序
+	类加载器来完成需要的操作。
+	
+		到这儿差不多把SPI机制解释清楚了。直白一点说是：我（JDk）提供了一种帮你（第三方实现着）加载服务（如：数据库驱动、日志库）
+	的便捷方式，只要你遵循约定（把类名写在/META-INF里），那当我启动时我回去扫描所有jar包里符合约定的类名，在调用forName加载。
+	但我的ClassLoader是没法加载的，哪就把它加载到当前执行线程的线程上下文类加载器里，后续你想怎么操作就是你的事了。
+	
+四、Tomcat与Spring的类加载器案例
+	接下来将介绍《深入理解Java虚拟机》一书中的案例，并解答它所提出的问题（部分内容来自于书中原文）。
+	
+	Tomcat中的类加载器
+		在tomcat目录结构中，有三个目录（"/common/","/server/","/shared/"）可存放公用java类库，此外还有第四组Web应用
+	程序自身的目录"/WEB-INF/"，把Java目录放置在这些目录中的含义分别是：
+		*common：类库可被tomcat和所有的web应用程序共同使用。
+		*server：类库可被tomcat使用，但对所有的Web应用程序是不可见的。
+		*shared：类库可被web应用程序使用，但对tomcat是不可见的。
+		*WebApp/WEB-INF：类库仅仅可以被此web程序使用，但不可对tomcat和其他web程序使用。
+		
+		为了支持这套目录结构，并对目录里面的类库进行加载和隔离，tomcat自定义类多个类加载器，这些类加载器按照经典的双亲委派模型
+	机制来实现，如下图示：
+		详见此图请查看网页链接。。。
+		
+		灰色部分的3个类加载器是JDK默认提供的类加载器，之前介绍过，在这里就不在叙述了，而CommonClassLoader、CatalinaClassLoader、
+	SharedClassLoader、WebAppClassLoader则是tomcat自定义的类加载器，它们分别加载"/commcon/","/server/","/shared/",
+	和"WebApp/WEB-INF/*"中的Java类库。其中WebApp类加载器和Jsp类加载器通常会存在多个实例，每一个Web应用程序对应一个WebApp类加载器
+	每一个Jsp文件对应一个jsp类加载器。
+	
+		从图中的委派关系中可以看出，CommonClassLoader能加载的类都可以被CatalinaClassLoader和SharedClassLoader使用，而
+	CatalinaClassLoader和SharedClassLoader自己能加载的类则与对方相互隔离。WebAppClassLoader可以是用SharedClassLoader
+	加载到的类，但各个WebClassLoader实例之间相互隔离。而JarsperLoader的加载范围仅仅是这个Jsp文件所编译出来的那一个Class，它出现的
+	目的是为了被丢弃：当服务器检测到JSP文件被修改时，会替换掉目前的JarsperLoader的实例，并通过再建立一个新的Jsp类加载器来实现Jsp文件
+	的HotSwap功能。
+	
+	Spring加载问题
+		Tomcat的实现清晰易懂，并且采用官方推荐的“正统”的使用类加载器的方式。这时作者提一个问题：如果有10个Web应用程序都用到了spring的话，
+	可以把spring的jar包放到common或shared目录下让这些程序共享。Spring的作用是管理每个web应用程序的bean，getBean时自然要能访问到
+	应用程序的类，而用户的程序显然是放在/WebApp/WEB-INF（由WebAppClassLoader来加载）目录中，那么在CommonClassLoader和
+	SharedClassLoader中的spring容器如何去加载并不在其加载范围的用户程序（WebApp/WEB-INF）中的Class的呢？
+		解答：
+		答案呼之欲出：spring根本不会去管自己放到哪里，它统统使用线程类加载器来加载类，而线程类加载器默认设置为了WebAppClassLoader。
+	也就是说，哪个WebApp应用调用了spring，spring就去取该应用自己的WebAppClassLoader来加载Bean，简单完美~~
+	
+五、总结
+	通过上面的两个案例分析，我们可以总结出线程上下文类加载器使用的场景：
+		1、当高层提供了统一的接口让低层去实现，同时又要是在高层加载（或实例化）低层时，必须通过线程上下文类加载器来帮助高层的ClassLoader
+	找到并加载该类。
+		2、当使用本类托管类加载，然而加载本类的ClassLoader未知时，为了隔离不同的调用者，可以取调用者各自的线程上下文类加载器代为托管。
+		
+六、更多
+	更多关于JVM内存模型的结构、Java对象在虚拟机中的创建、定位过程、内存异常分析等相关知识的介绍，请各位看官移步我的博文请移步我的博文[《JVM 内存模型概述》]。
+
+	
+	
